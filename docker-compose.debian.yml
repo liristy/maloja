@@ -1,7 +1,7 @@
 # Debian：docker compose -f docker-compose.debian.yml up -d
 services:
   maloja:
-    image: liristy/maloja:3.2.8
+    image: liristy/maloja:3.2.9
     restart: unless-stopped
     ports:
       - "42010:42010"

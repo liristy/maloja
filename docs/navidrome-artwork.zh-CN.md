@@ -17,7 +17,7 @@ Docker 可直接使用发布镜像，并把媒体库只读挂载到容器。例�
 ```yaml
 services:
   maloja:
-    image: liristy/maloja:3.2.8
+    image: liristy/maloja:3.2.9
     environment:
       MALOJA_MEDIA_LIBRARY_PATH: /music
       MALOJA_STARTPAGE_CHART_IMAGES: "14"
