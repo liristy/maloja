@@ -4,6 +4,7 @@
 
 	<head>
 		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		<meta name="referrer" content="same-origin" />
 
 		<title>{% block title %}{% endblock %}</title>
@@ -47,7 +48,7 @@
 		<table class="top_info">
 			<tr>
 				<td class="image">
-					<div style="background-image:url('{% block imageurl %}/favicon.png{% endblock %}')"></div>
+					<div class="lazy" data-bg="{% block imageurl %}/favicon.png{% endblock %}"></div>
 				</td>
 				<td class="text">
 					<h1>{% block heading %}{% endblock %}</h1><br/>
@@ -110,7 +111,20 @@
     <!-- Load script as late as possible so DOM renders first -->
     <script src="/lazyload17-8-2.min.js"></script>
     <script>
-        var lazyLoadInstance = new LazyLoad({});
+        var lazyLoadInstance = new LazyLoad({
+            threshold: 100,
+            callback_error: function (element) {
+                // A 202 image response needs an explicit retry; browsers ignore Retry-After here.
+                var attempts = Number(element.dataset.imageRetries || 0);
+                if (attempts >= 6) return;
+                element.dataset.imageRetries = attempts + 1;
+                setTimeout(function () {
+                    element.classList.remove("error");
+                    LazyLoad.resetStatus(element);
+                    lazyLoadInstance.update();
+                }, Math.min(30000, 1000 * Math.pow(2, attempts)));
+            }
+        });
     </script>
 	</body>
 </html>

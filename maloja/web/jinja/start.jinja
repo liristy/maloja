@@ -11,6 +11,7 @@
 {% block content -%}
 
 	<div id="startpage">
+	{% set tile_count = settings['STARTPAGE_CHART_IMAGES'] %}
 
 
 	{% for module in ['charts_artists','charts_tracks','charts_albums','pulse','lastscrobbles'] %}

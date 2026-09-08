@@ -1,6 +1,10 @@
 from .pkg_global.conf import data_dir, malojaconfig
 from . import thirdparty
 from . import database
+from .artwork import atomic_write, cache_image, encode_image, identity
+from .media_library import MediaLibrary
+from pathlib import Path
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from doreah.logging import log
 
@@ -13,7 +17,6 @@ import socket
 import random
 import base64
 import requests
-import datauri
 import io
 from threading import Lock
 from concurrent.futures import ThreadPoolExecutor
@@ -26,7 +29,6 @@ import sqlalchemy as sql
 
 
 MAX_RESOLVE_THREADS = 5
-MAX_SECONDS_TO_RESOLVE_REQUEST = 5
 
 
 # remove old db file (columns missing)
@@ -43,6 +45,7 @@ dblock = Lock()
 
 DB['artists'] = sql.Table(
 	'artists', meta,
+	sql.Column('entitykey',sql.String),
 	sql.Column('id',sql.Integer,primary_key=True),
 	sql.Column('url',sql.String),
 	sql.Column('expire',sql.Integer),
@@ -52,6 +55,7 @@ DB['artists'] = sql.Table(
 )
 DB['tracks'] = sql.Table(
 	'tracks', meta,
+	sql.Column('entitykey',sql.String),
 	sql.Column('id',sql.Integer,primary_key=True),
 	sql.Column('url',sql.String),
 	sql.Column('expire',sql.Integer),
@@ -61,6 +65,7 @@ DB['tracks'] = sql.Table(
 )
 DB['albums'] = sql.Table(
 	'albums', meta,
+	sql.Column('entitykey',sql.String),
 	sql.Column('id',sql.Integer,primary_key=True),
 	sql.Column('url',sql.String),
 	sql.Column('expire',sql.Integer),
@@ -70,6 +75,59 @@ DB['albums'] = sql.Table(
 )
 
 meta.create_all(engine)
+# NULL keys invalidate pre-upgrade cache entries without touching uploaded files.
+for table in DB:
+	if 'entitykey' not in {c['name'] for c in sql.inspect(engine).get_columns(table)}:
+		with engine.begin() as conn:
+			conn.execute(sql.text(f'ALTER TABLE {table} ADD COLUMN entitykey VARCHAR'))
+
+library = None
+library_lock = Lock()
+
+def media_library():
+	global library
+	root = malojaconfig["MEDIA_LIBRARY_PATH"]
+	if not root:
+		return None
+	with library_lock:
+		if library is None or library.root != Path(root).expanduser().resolve():
+			library = MediaLibrary(root, data_dir['cache']('media-artwork.json'), malojaconfig["MEDIA_LIBRARY_SCAN_INTERVAL"])
+		library.refresh()
+		return library
+
+def thumbnail(path):
+	return cache_image(path, data_dir['cache']('images'), malojaconfig["IMAGE_THUMBNAIL_SIZE"], malojaconfig["IMAGE_QUALITY"])
+
+def entity_info(artist_id=None, track_id=None, album_id=None):
+	if track_id:
+		return "track", database.sqldb.get_track(track_id)
+	if album_id:
+		return "album", database.sqldb.get_album(album_id)
+	return "artist", database.sqldb.get_artist(artist_id)
+
+def preferred_image(kind, entity):
+	# User selections are durable state, independent of expiring provider caches.
+	selected = Path(data_dir['images']('selected', identity(kind, entity) + '.webp'))
+	if selected.is_file():
+		return {'type': 'localurl', 'value': thumbnail(selected)}
+	if malojaconfig["USE_LOCAL_IMAGES"]:
+		local = local_files(**{kind: entity})
+		# Recover the most recent legacy upload instead of randomly rotating it.
+		uploads = [p for p in local if '/webupload' in p]
+		if uploads:
+			path = max(uploads, key=lambda p: (Path(data_dir['images'](p.removeprefix('/images/'))).stat().st_mtime_ns, p))
+			return {'type': 'localurl', 'value': thumbnail(data_dir['images'](path.removeprefix('/images/')))}
+		media = media_library()
+		if media:
+			path = media.lookup(kind, entity)
+			if path:
+				try:
+					return {'type': 'localurl', 'value': thumbnail(path)}
+				except (OSError, ValueError):
+					log(f"Cannot read media artwork: {path}")
+		if local:
+			return {'type': 'localurl', 'value': thumbnail(data_dir['images'](local[0].removeprefix('/images/')))}
+	return None
 
 def get_id_and_table(track_id=None,artist_id=None,album_id=None):
 	if track_id:
@@ -80,13 +138,15 @@ def get_id_and_table(track_id=None,artist_id=None,album_id=None):
 		return artist_id,'artists'
 
 def get_image_from_cache(track_id=None,artist_id=None,album_id=None):
+	kind, entity = entity_info(track_id=track_id, artist_id=artist_id, album_id=album_id)
 	now = int(datetime.datetime.now().timestamp())
 	entity_id, table = get_id_and_table(track_id=track_id,artist_id=artist_id,album_id=album_id)
 
 	with engine.begin() as conn:
 		op = DB[table].select().where(
 			DB[table].c.id==entity_id,
-			DB[table].c.expire>now
+			DB[table].c.expire>now,
+			DB[table].c.entitykey == identity(kind, entity)
 		)
 		result = conn.execute(op).all()
 	for row in result:
@@ -100,10 +160,13 @@ def get_image_from_cache(track_id=None,artist_id=None,album_id=None):
 			# for some reason this can also be an empty string, so use or None here to unify
 	return None # no cache entry
 
-def set_image_in_cache(url,track_id=None,artist_id=None,album_id=None,local=False):
-	remove_image_from_cache(track_id=track_id,artist_id=artist_id,album_id=album_id)
+def set_image_in_cache(url,track_id=None,artist_id=None,album_id=None,local=False,entity_key=None):
+	if entity_key is None:
+		kind, entity = entity_info(track_id=track_id, artist_id=artist_id, album_id=album_id)
+		entity_key = identity(kind, entity)
 	entity_id, table = get_id_and_table(track_id=track_id,artist_id=artist_id,album_id=album_id)
-
+	# Network IO must not hold the global cache lock or block unrelated covers.
+	localproxyurl = dl_image(url) if not local and malojaconfig["PROXY_IMAGES"] and url else None
 	with dblock:
 		now = int(datetime.datetime.now().timestamp())
 		if url is None:
@@ -111,20 +174,17 @@ def set_image_in_cache(url,track_id=None,artist_id=None,album_id=None,local=Fals
 		else:
 			expire = now + (malojaconfig["CACHE_EXPIRE_POSITIVE"] * 24 * 3600)
 
-		if not local and malojaconfig["PROXY_IMAGES"] and url is not None:
-			localproxyurl = dl_image(url)
-		else:
-			localproxyurl = None
-
 		with engine.begin() as conn:
-			op = DB[table].insert().values(
+			op = sqlite_insert(DB[table]).values(
 				id=entity_id,
 				url=url,
 				expire=expire,
+				entitykey=entity_key,
 				local=local,
 				localproxyurl=localproxyurl
 			)
-			result = conn.execute(op)
+			op = op.on_conflict_do_update(index_elements=['id'], set_={c: getattr(op.excluded, c) for c in ['url', 'expire', 'entitykey', 'local', 'localproxyurl']})
+			conn.execute(op)
 
 def remove_image_from_cache(track_id=None,artist_id=None,album_id=None):
 	entity_id, table = get_id_and_table(track_id=track_id,artist_id=artist_id,album_id=album_id)
@@ -152,15 +212,28 @@ def dl_image(url):
 		log(f"Blocked SSRF attempt: {url}")
 		return None
 	try:
-		r = requests.get(url)
-		mime = r.headers.get('content-type') or 'image/jpg'
-		data = io.BytesIO(r.content).read()
-		#uri = datauri.DataURI.make(mime,charset='ascii',base64=True,data=data)
-		targetname = '%030x' % random.getrandbits(128)
+		for _ in range(5):
+			if not validate_safe_url(url):
+				return None
+			with requests.get(url, timeout=(3, 10), allow_redirects=False, stream=True) as r:
+				if r.is_redirect:
+					url = urllib.parse.urljoin(url, r.headers['Location'])
+					continue
+				r.raise_for_status()
+				buffer = io.BytesIO()
+				for chunk in r.iter_content(65536):
+					buffer.write(chunk)
+					if buffer.tell() > 20 * 1024 * 1024:
+						raise ValueError('Remote image exceeds 20 MiB')
+				buffer.seek(0)
+				data = encode_image(buffer, malojaconfig["IMAGE_THUMBNAIL_SIZE"], malojaconfig["IMAGE_QUALITY"])
+				break
+		else:
+			return None
+		targetname = '%030x.webp' % random.getrandbits(128)
 		targetpath = data_dir['cache']('images',targetname)
-		with open(targetpath,'wb') as fd:
-			fd.write(data)
-		return os.path.join("/cacheimages",targetname)
+		atomic_write(targetpath, data)
+		return "/cacheimages/" + targetname
 	except Exception:
 		log(f"Image {url} could not be downloaded for local caching")
 		return None
@@ -173,9 +246,9 @@ def validate_safe_url(url):
 	try:
 		ip_str = socket.gethostbyname(parsed.hostname)
 		ip = ipaddress.ip_address(ip_str)
-		if ip.is_private or ip.is_loopback or ip.is_link_local:
+		if not ip.is_global:
 			return False
-	except (socket.gaierror, ValueError):
+	except (socket.gaierror, ValueError, TypeError):
 		return False
 	return True
 
@@ -188,30 +261,17 @@ def get_track_image(track=None,track_id=None):
 	if track_id is None:
 		track_id = database.sqldb.get_track_id(track,create_new=False)
 
-	if malojaconfig["USE_ALBUM_ARTWORK_FOR_TRACKS"]:
-		if track is None:
-			track = database.sqldb.get_track(track_id)
-		if track.get("album"):
-			album_id = database.sqldb.get_album_id(track["album"])
-			return get_album_image(album_id=album_id)
-
-	resolver.submit(resolve_image,track_id=track_id)
-
 	return f"/image?track_id={track_id}"
 
 def get_artist_image(artist=None,artist_id=None):
 	if artist_id is None:
 		artist_id = database.sqldb.get_artist_id(artist,create_new=False)
 
-	resolver.submit(resolve_image,artist_id=artist_id)
-
 	return f"/image?artist_id={artist_id}"
 
 def get_album_image(album=None,album_id=None):
 	if album_id is None:
 		album_id = database.sqldb.get_album_id(album,create_new=False)
-
-	resolver.submit(resolve_image,album_id=album_id)
 
 	return f"/image?album_id={album_id}"
 
@@ -266,10 +326,10 @@ def resolve_image(artist_id=None,track_id=None,album_id=None):
 		if malojaconfig["USE_LOCAL_IMAGES"]:
 			images = local_files(**{entitytype: entity})
 			if len(images) != 0:
-				result = random.choice(images)
+				result = images[0]
 				result = urllib.parse.quote(result)
 				result = {'type':'localurl','value':result}
-				set_image_in_cache(artist_id=artist_id,track_id=track_id,album_id=album_id,url=result['value'],local=True)
+				set_image_in_cache(artist_id=artist_id,track_id=track_id,album_id=album_id,url=result['value'],local=True,entity_key=identity(entitytype, entity))
 				return result
 
 		# third party
@@ -281,7 +341,7 @@ def resolve_image(artist_id=None,track_id=None,album_id=None):
 			result = thirdparty.get_image_album_all((entity['artists'],entity['albumtitle']))
 
 		result = {'type':'url','value':result or None}
-		set_image_in_cache(artist_id=artist_id,track_id=track_id,album_id=album_id,url=result['value'])
+		set_image_in_cache(artist_id=artist_id,track_id=track_id,album_id=album_id,url=result['value'],entity_key=identity(entitytype, entity))
 	finally:
 		with image_resolve_controller_lock:
 			image_resolve_controller[table].remove(entity_id)
@@ -290,13 +350,27 @@ def resolve_image(artist_id=None,track_id=None,album_id=None):
 
 # the actual http request for the full image
 def image_request(artist_id=None,track_id=None,album_id=None):
+	kind, entity = entity_info(artist_id=artist_id, track_id=track_id, album_id=album_id)
+	preferred = preferred_image(kind, entity)
+	if preferred:
+		return preferred
+	if track_id and malojaconfig["USE_ALBUM_ARTWORK_FOR_TRACKS"] and entity.get('album'):
+		return image_request(album_id=database.sqldb.get_album_id(entity['album'], create_new=False))
+	media = media_library() if malojaconfig['USE_LOCAL_IMAGES'] else None
+	if media:
+		if not media.ready:
+			return {'type': 'noimage', 'value': 'wait'}
+		if not malojaconfig['MEDIA_LIBRARY_EXTERNAL_FALLBACK']:
+			if track_id and entity.get('album'):
+				return image_request(album_id=database.sqldb.get_album_id(entity['album'], create_new=False))
+			return {'type': 'localurl', 'value': f'/static/svg/placeholder_{kind}.svg'}
+	# Resolve only when the browser actually requests this image.
+	queue_resolve(artist_id=artist_id, track_id=track_id, album_id=album_id)
 
-	# because we use lazyload, we can allow our http requests to take a little while at least
-	# not the full backend request, but a few seconds to give us time to fetch some images
-	# because 503 retry-after doesn't seem to be honored
-	attempt = 0
-	while attempt < MAX_SECONDS_TO_RESOLVE_REQUEST:
-		attempt += 1
+	# Bound each HTTP wait so slow providers cannot occupy all server workers.
+	# The lazy loader retries pending images with exponential backoff.
+	deadline = time.monotonic() + 0.3
+	while time.monotonic() < deadline:
 		# check cache
 		result = get_image_from_cache(artist_id=artist_id,track_id=track_id,album_id=album_id)
 		if result is not None:
@@ -325,10 +399,30 @@ def image_request(artist_id=None,track_id=None,album_id=None):
 					if album_id:
 						result['value'] = "/static/svg/placeholder_album.svg"
 			return result
-		time.sleep(1)
+		time.sleep(0.05)
 
 	# no entry, which means we're still working on it
 	return {'type':'noimage','value':'wait'}
+
+
+pending_resolves = set()
+pending_resolves_lock = Lock()
+
+def queue_resolve(**keys):
+	key = get_id_and_table(**keys)
+	with pending_resolves_lock:
+		if key in pending_resolves or len(pending_resolves) >= 64:
+			return
+		pending_resolves.add(key)
+	def run():
+		try:
+			resolve_image(**keys)
+		except Exception as error:
+			log(f"Image resolution failed for {key}: {error}")
+		finally:
+			with pending_resolves_lock:
+				pending_resolves.discard(key)
+	resolver.submit(run)
 
 
 
@@ -353,42 +447,25 @@ def get_all_possible_filenames(artist=None,track=None,album=None):
 	filenames = []
 
 	if track or album:
-		safeartists = [re.sub("[^a-zA-Z0-9]","",artist) for artist in artists]
-		safetitle = re.sub("[^a-zA-Z0-9]","",title)
-
 		if len(artists) < 4:
 			unsafeperms = itertools.permutations(artists)
-			safeperms = itertools.permutations(safeartists)
 		else:
 			unsafeperms = [sorted(artists)]
-			safeperms = [sorted(safeartists)]
 
 		for unsafeartistlist in unsafeperms:
 			filename = "-".join(unsafeartistlist) + "_" + title
 			if filename != "":
 				filenames.append(filename)
 				filenames.append(filename.lower())
-		for safeartistlist in safeperms:
-			filename = "-".join(safeartistlist) + "_" + safetitle
-			if filename != "":
-				filenames.append(filename)
-				filenames.append(filename.lower())
-		filenames = list(set(filenames))
+		# ASCII-only aliases collapse unrelated Chinese artist/album names to "_".
+		filenames = sorted(set(filenames))
 		if len(filenames) == 0: filenames.append(str(hash((frozenset(artists),title))))
 	else:
-		#unsafeartist = artist.translate(None,"-_./\\")
-		safeartist = re.sub("[^a-zA-Z0-9]","",artist)
-
 		filename = artist
 		if filename != "":
 			filenames.append(filename)
 			filenames.append(filename.lower())
-		filename = safeartist
-		if filename != "":
-			filenames.append(filename)
-			filenames.append(filename.lower())
-
-		filenames = list(set(filenames))
+		filenames = sorted(set(filenames))
 		if len(filenames) == 0: filenames.append(str(hash(artist)))
 
 	return [superfolder + name for name in filenames]
@@ -403,7 +480,7 @@ def local_files(artist=None,album=None,track=None):
 
 	for purename in filenames:
 		# direct files
-		for ext in ["png","jpg","jpeg","gif"]:
+		for ext in ["webp","png","jpg","jpeg","gif"]:
 			#for num in [""] + [str(n) for n in range(0,10)]:
 			if os.path.exists(data_dir['images'](purename + "." + ext)):
 				images.append("/images/" + purename + "." + ext)
@@ -411,12 +488,12 @@ def local_files(artist=None,album=None,track=None):
 		# folder
 		try:
 			for f in os.listdir(data_dir['images'](purename)):
-				if f.split(".")[-1] in ["png","jpg","jpeg","gif"]:
+				if f.split(".")[-1].lower() in ["webp","png","jpg","jpeg","gif"]:
 					images.append("/images/" + purename + "/" + f)
 		except Exception:
 			pass
 
-	return images
+	return sorted(set(images))
 
 
 
@@ -446,24 +523,15 @@ def set_image(b64,**keys):
 	match = re.fullmatch(regex,b64)
 	if not match: raise MalformedB64()
 
-	type,b64 = match.groups()
-	b64 = base64.b64decode(b64)
-	filename = "webupload" + str(int(datetime.datetime.now().timestamp())) + "." + type
-	for folder in get_all_possible_filenames(**entity):
-		if os.path.exists(data_dir['images'](folder)):
-			with open(data_dir['images'](folder,filename),"wb") as f:
-				f.write(b64)
-			break
-	else:
-		folder = get_all_possible_filenames(**entity)[0]
-		os.makedirs(data_dir['images'](folder))
-		with open(data_dir['images'](folder,filename),"wb") as f:
-			f.write(b64)
-
-
-	log("Saved image as " + data_dir['images'](folder,filename),module="debug")
-
-	# set as current picture in rotation
-	set_image_in_cache(**idkeys,url=os.path.join("/images",folder,filename),local=True)
-
-	return os.path.join("/images",folder,filename)
+	try:
+		data = base64.b64decode(match.group(2), validate=True)
+		data = encode_image(io.BytesIO(data), malojaconfig["IMAGE_THUMBNAIL_SIZE"], malojaconfig["IMAGE_QUALITY"])
+	except Exception as error:
+		raise MalformedB64() from error
+	# Use canonical DB metadata, not potentially incomplete upload query fields.
+	kind, canonical = entity_info(**idkeys)
+	path = data_dir['images']('selected', identity(kind, canonical) + '.webp')
+	atomic_write(path, data)
+	url = thumbnail(path)
+	set_image_in_cache(**idkeys, url=url, local=True)
+	return url

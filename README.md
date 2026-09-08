@@ -116,3 +116,7 @@ If you can't automatically scrobble your music, you can always do it manually on
 ## How to extend
 
 If you'd like to implement anything on top of Maloja, visit `/api_explorer`.
+
+## Navidrome 本地封面
+
+支持直接读取 Navidrome 改版的媒体库图片与 NFO 元数据，自动生成 WebP 缩略图，并持久保存手动选择的封面。配置与维护方法见 [Navidrome 封面接入说明](docs/navidrome-artwork.zh-CN.md)。

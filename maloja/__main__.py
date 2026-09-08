@@ -80,7 +80,30 @@ def print_settings():
 		print(col['lightblue'](k.ljust(maxlen+2)),conf.malojaconfig[k])
 
 
-@mainfunction({"l":"level","v":"version","V":"version"},flags=['version','include_images','prefer_existing'],shield=True)
+def sync_artwork(root=None, compress=False):
+	"""Refresh the read-only Navidrome artwork index; optionally warm thumbnails."""
+	from .media_library import MediaLibrary
+	from .images import thumbnail
+	import json
+	root = root or conf.malojaconfig['MEDIA_LIBRARY_PATH']
+	if not root:
+		raise ValueError('Set media_library_path or pass --root')
+	library = MediaLibrary(root, conf.data_dir['cache']('media-artwork.json'))
+	status = library.scan()
+	if compress:
+		status['compressed'] = 0
+		status['compression_errors'] = 0
+		for path in sorted(set(library.entries.values())):
+			try:
+				thumbnail(path)
+				status['compressed'] += 1
+			except (OSError, ValueError):
+				status['compression_errors'] += 1
+				log(f'Could not compress artwork: {path}')
+	print(json.dumps(status, ensure_ascii=False))
+
+
+@mainfunction({"l":"level","v":"version","V":"version"},flags=['version','include_images','prefer_existing','compress'],shield=True)
 def main(*args,**kwargs):
 
 	actions = {
@@ -95,6 +118,7 @@ def main(*args,**kwargs):
 		"export":tasks.export,					# maloja export
 		"apidebug":apidebug.run,				# maloja apidebug
 		"parsealbums":tasks.parse_albums,		# maloja parsealbums --strategy majority
+		"syncartwork":sync_artwork,			# maloja syncartwork --compress
 		# aux
 		"info":print_info,
 		"settings":print_settings

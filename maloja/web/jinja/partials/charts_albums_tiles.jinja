@@ -5,7 +5,7 @@
 	{% set charts = dbc.get_charts_albums(filterkeys,limitkeys,{'only_own_albums':True}) %}
 {% endif %}
 
-{% set charts_14 = charts | fixlength(14) %}
+{% set charts_14 = charts | fixlength(tile_count | default(14)) %}
 
 
 <div class="tiles">
@@ -19,7 +19,7 @@
 			{% set scrobbles = entry.scrobbles %}
 			<div class="tile">
 			<a href="{{ links.url(album) }}">
-				<div class="lazy" data-bg="{{ images.get_album_image(album) }}"'>
+				<div class="lazy" data-bg="{{ images.get_album_image(album) }}">
 					<span class='stats'>#{{ rank }}</span> <span>{{ album.albumtitle }}</span>
 					{% if settings['SHOW_PLAY_NUMBER_ON_TILES'] %}
 						<p class="scrobbles"><span>{{ scrobbles }} {{ 'play' if scrobbles == 1 else 'plays' }}</span> </p>

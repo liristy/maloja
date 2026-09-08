@@ -3,6 +3,7 @@
 
 # environments / builds
 .venv/*
+.test-data/
 /dist
 /build
 /*.egg-info

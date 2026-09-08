@@ -70,6 +70,12 @@ Settings File			| Environment Variable			| Type			| Description
 `timezone`	| `MALOJA_TIMEZONE`  | Integer | UTC Offset
 `location_timezone`	| `MALOJA_LOCATION_TIMEZONE`  | String | Location Timezone (overrides `timezone`)
 **Web Interface**
+`media_library_path` | `MALOJA_MEDIA_LIBRARY_PATH` | String | Read-only Navidrome library root with artist/album artwork and optional NFO metadata.
+`media_library_scan_interval` | `MALOJA_MEDIA_LIBRARY_SCAN_INTERVAL` | Integer | Background scan interval in seconds (default 300, minimum 30).
+`media_library_external_fallback` | `MALOJA_MEDIA_LIBRARY_EXTERNAL_FALLBACK` | Boolean | Allow external artwork searches for missing library images (default false).
+`image_thumbnail_size` | `MALOJA_IMAGE_THUMBNAIL_SIZE` | Integer | Maximum thumbnail dimension, 64–1200 pixels (default 320).
+`image_quality` | `MALOJA_IMAGE_QUALITY` | Integer | WebP quality, 1–100 (default 78).
+`startpage_chart_images` | `MALOJA_STARTPAGE_CHART_IMAGES` | Integer | Tiles per homepage chart, 1–14 (default 6).
 `default_range_startpage`	| `MALOJA_DEFAULT_RANGE_STARTPAGE`  | Choice | Default Range for Startpage Stats
 `default_step_pulse`	| `MALOJA_DEFAULT_STEP_PULSE`  | Choice | Default Pulse Step
 `charts_display_tiles`	| `MALOJA_CHARTS_DISPLAY_TILES`  | Boolean | Display Chart Tiles

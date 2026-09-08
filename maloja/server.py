@@ -3,7 +3,8 @@ import os
 from threading import Thread
 from importlib import resources
 import time
-from magic import from_file
+from pathlib import Path
+from PIL import Image
 
 
 # server stuff
@@ -17,7 +18,7 @@ from doreah.logging import log
 # rest of the project
 from . import database
 from .database.jinjaview import JinjaDBConnection
-from .images import image_request
+from .images import image_request, thumbnail, media_library
 from .malojauri import uri_to_internal, remove_identical
 from .pkg_global.conf import malojaconfig, data_dir, auth
 from .pkg_global import conf
@@ -119,12 +120,24 @@ def deprecated_api(pth):
 @webserver.route("/image")
 def dynamic_image():
 	keys = FormsDict.decode(request.query)
-	result = image_request(**{k:int(keys[k]) for k in keys})
+	ids = {k: keys[k] for k in ('artist_id', 'track_id', 'album_id') if k in keys}
+	if len(ids) != 1:
+		abort(400, 'Exactly one image entity is required')
+	try:
+		ids = {k: int(v) for k, v in ids.items()}
+		if any(v <= 0 for v in ids.values()):
+			raise ValueError()
+		result = image_request(**ids)
+	except ValueError:
+		abort(400, 'Invalid image entity')
+	except (IndexError, KeyError):
+		abort(404, 'Image entity not found')
+	response.set_header('Cache-Control', 'no-store')
 
 	if result['type'] == 'noimage' and result['value'] == 'wait':
 		# still being worked on
 		response.status = 202
-		response.set_header('Retry-After',15)
+		response.set_header('Retry-After',1)
 		return
 	if result['type'] in ('url','localurl'):
 		redirect(result['value'],307)
@@ -133,30 +146,40 @@ def dynamic_image():
 @webserver.route("/images/<pth:re:.*\\.jpg>")
 @webserver.route("/images/<pth:re:.*\\.png>")
 @webserver.route("/images/<pth:re:.*\\.gif>")
+@webserver.route("/images/<pth:re:.*\\.webp>")
 def static_image(pth):
-
-	ext = pth.split(".")[-1]
-	small_pth = pth + "-small"
-	if os.path.exists(data_dir['images'](small_pth)):
-		resp = static_file(small_pth,root=data_dir['images']())
-	else:
-		try:
-			from pyvips import Image
-			thumb = Image.thumbnail(data_dir['images'](pth),300)
-			thumb.webpsave(data_dir['images'](small_pth))
-			resp = static_file(small_pth,root=data_dir['images']())
-		except Exception:
-			resp = static_file(pth,root=data_dir['images']())
-
-	#response = static_file("images/" + pth,root="")
-	resp.set_header("Cache-Control", "public, max-age=86400")
-	resp.set_header("Content-Type", "image/" + ext)
-	return resp
+	root = Path(data_dir['images']()).resolve()
+	path = (root / pth).resolve()
+	if not path.is_relative_to(root) or not path.is_file():
+		abort(404)
+	try:
+		url = thumbnail(path)
+	except (OSError, ValueError):
+		abort(404, 'Unreadable image')
+	response.set_header('Cache-Control', 'no-store')
+	redirect(url, 307)
 
 @webserver.route("/cacheimages/<uuid>")
 def static_proxied_image(uuid):
-	mimetype = from_file(os.path.join(data_dir['cache']('images'),uuid),True)
-	return static_file(uuid,root=data_dir['cache']('images'),mimetype=mimetype)
+	root = Path(data_dir['cache']('images')).resolve()
+	path = (root / uuid).resolve()
+	if not path.is_relative_to(root) or not path.is_file():
+		abort(404)
+	try:
+		with Image.open(path) as image:
+			mimetype = Image.MIME.get(image.format, 'application/octet-stream')
+	except OSError:
+		abort(404)
+	if path.suffix.lower() != '.webp':
+		response.set_header('Cache-Control', 'no-store')
+		redirect(thumbnail(path), 307)
+	resp = static_file(uuid, root=str(root), mimetype=mimetype)
+	resp.set_header('Cache-Control', 'public, max-age=31536000, immutable')
+	return resp
+
+
+# Warm a persisted index in the background; page rendering never scans the library.
+media_library()
 
 @webserver.route("/login")
 def login():

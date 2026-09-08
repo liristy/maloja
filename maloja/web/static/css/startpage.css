@@ -1,3 +1,31 @@
+/* Fill the available space when fewer homepage covers are selected. */
+#startpage div.tiles {
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	grid-template-rows: none;
+	gap: 4px;
+	aspect-ratio: auto;
+	max-height: none;
+}
+#startpage div.tiles > div {
+	grid-column: auto;
+	grid-row: auto;
+	aspect-ratio: 1;
+	font-size: 80%;
+}
+#startpage > section {
+	min-width: 0;
+}
+#startpage .stat_module_pulse {
+	display: block;
+}
+#startpage .stat_module_pulse table {
+	width: 100%;
+	table-layout: fixed;
+}
+#startpage .stat_module_pulse td.timerange { width: 30%; }
+#startpage .stat_module_pulse td.amount { width: 10%; }
+#startpage .stat_module_pulse td.bar { width: 60%; }
+
 div#startpage {
 	display: grid;
 	justify-content: center;
@@ -11,7 +39,7 @@ div#startpage {
 @media (min-width: 2201px) {
 	div#startpage {
 		grid-template-columns: repeat(6, 14vw);
-		grid-template-rows: repeat(2, 45vh);
+		grid-template-rows: repeat(2, auto);
 		grid-column-gap: 2vw;
 
 		grid-template-areas:
@@ -23,7 +51,7 @@ div#startpage {
 @media (min-width: 1401px) and (max-width: 2200px) {
 	div#startpage {
 		grid-template-columns: repeat(2, 45vw);
-		grid-template-rows: repeat(3, 45vh);
+		grid-template-rows: repeat(3, auto);
 
 		grid-template-areas:
 			"charts_artists lastscrobbles"
