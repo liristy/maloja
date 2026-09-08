@@ -12,21 +12,20 @@ $env:MALOJA_MEDIA_LIBRARY_PATH = 'C:\Users\JYQ\音乐库'
 
 保留你现有的 `MALOJA_DATA_DIRECTORY` 和启动方式。这里的目录必须是 **Maloja 进程所在机器可读取的路径**。没有设置音乐库路径时，原有本地图片和外部封面提供商仍然可用。
 
-Docker 中需要从当前代码构建镜像，并把媒体库只读挂载到容器。例如，在现有 compose 配置上补充：
+Docker 可直接使用发布镜像，并把媒体库只读挂载到容器。例如，在 Debian 的现有 compose 配置上补充：
 
 ```yaml
 services:
   maloja:
-    build:
-      context: .
-      dockerfile: Containerfile
+    image: liristy/maloja:3.2.8
     environment:
       MALOJA_MEDIA_LIBRARY_PATH: /music
+      MALOJA_STARTPAGE_CHART_IMAGES: "14"
     volumes:
-      - "C:/Users/JYQ/音乐库:/music:ro"
+      - "/srv/music:/music:ro"
 ```
 
-保留原来的数据卷；容器内的设置使用 `/music`，不能使用 Windows 宿主机路径。
+把 `/srv/music` 换成 Debian 上实际存在的音乐库路径，保留原来的数据卷、端口和权限配置；容器内的设置使用 `/music`。短格式挂载兼容旧版 `docker-compose`。已有配置若将 `MALOJA_STARTPAGE_CHART_IMAGES` 设为 `6`，需改成 `14`；环境变量会覆盖新版本默认值。
 
 ## 识别规则
 
@@ -34,7 +33,7 @@ services:
 
 | 类型 | 读取方式 |
 | --- | --- |
-| 歌手 | 歌手目录内 `artist.*`，其次 `folder.*` |
+| 歌手 | 只读取媒体歌手目录内的 `artist.*`，不使用 `folder.*`、专辑封面或外部照片 |
 | 专辑 | 专辑目录内 `cover.*`、`folder.*`、`front.*`；没有时，仅在单曲图片来源唯一的情况下回退 |
 | 单曲 | 与 NFO 同名的 `文件名-cover.*`、`文件名.*`，其次专辑图片 |
 
@@ -51,13 +50,17 @@ services:
       空白格 - 蔡健雅-cover.jpg
 ```
 
-NFO 读取 `title`、`artist`、`album`、`albumartist`，以及 `participants/participant` 中的歌手角色。多歌手优先使用独立的 participant 记录。保留中文和标点，按完整歌手集合、标题匹配；单曲有专辑信息时还校验专辑。没有 NFO 时支持 `歌手/专辑/文件` 两层目录，曲名取文件名并去掉末尾的 ` - 歌手`。不会猜测编号、混音名或跨专辑同名歌曲；目前不提取音频文件内嵌图片，普通本地音频需提供旁置图片。
+NFO 读取 `title`、`artist`、`album`、`albumartist`，以及 `participants/participant` 中的歌手角色。多歌手同时兼容独立 participant 列表和同一 NFO 的 `artist` 显示名（如 `SARA • 刘佳`），不会随意拆分乐队名。原声带也兼容旧收听记录以单曲歌手作为专辑歌手的情况。
+
+歌手照片遵循媒体目录：歌手同名目录的 `artist.*` 优先；没有时按 NFO 将歌手显示名关联到该媒体所在的歌手目录。合唱读取实际存放目录的 `artist.*`，不选排序第一位歌手的照片。若同一歌手关联多个目录且照片来源不同，则保留占位图，避免随机错配。
+
+保留中文和标点，优先按完整歌手集合、标题及专辑匹配。旧收听记录的专辑名称不同，仅在完整歌手集合和曲名能唯一匹配一张单曲图片时回退；多版本存在歧义时不会选图。没有 NFO 时支持 `歌手/专辑/文件` 两层目录，曲名取文件名并去掉末尾的 ` - 歌手`。不会猜测编号或混音名；目前不提取音频文件内嵌图片，普通本地音频需提供旁置图片。
 
 多个不同目录提供同一身份的不同封面时，索引会记录冲突并跳过歧义匹配。启用媒体库后，默认不再为未匹配项目进行外部模糊搜索。如确实需要，可开启 **External Artwork Fallback**。
 
 ## 封面优先级与旧数据
 
-优先级为：当前手动上传 → 最近一次旧版上传 → 媒体库 → 旧式本地图片 → 外部提供商（允许时）→ 占位图。
+专辑和单曲优先级为：当前手动上传 → 最近一次旧版上传 → 媒体库 → 旧式本地图片 → 外部提供商（允许时）→ 占位图。配置媒体库后，歌手照片严格使用其 `artist.*`；旧上传、外部缓存不再覆盖媒体目录，没有对应图片就显示占位图。旧上传文件仍保留在数据目录。
 
 新的手动上传使用完整身份的 SHA-256 文件名，保存于 Maloja 数据目录的 `images/selected/`，不会随图片缓存过期而改变；重复上传替换当前选择。旧版同一目录存在多张上传图片时，按文件修改时间选择最新一张，不再随机轮换。旧式本地图片也改为固定顺序。删除中文后生成的 ASCII 别名（例如 `albums/_.jpg`）不再参与匹配；这类文件无法可靠判断原本属于谁，需要重新上传或使用音乐库封面。
 
@@ -92,7 +95,7 @@ maloja syncartwork --compress
 | `media_library_external_fallback` | false | 启用媒体库时允许外部封面搜索 |
 | `image_thumbnail_size` | 320 | 图片最长边，64–1200 |
 | `image_quality` | 78 | WebP 质量，1–100 |
-| `startpage_chart_images` | 6 | 首页每个榜单的图片数，1–14 |
+| `startpage_chart_images` | 14 | 首页每个榜单的图片数，1–14；桌面每行 7 张，手机每行 4 张 |
 
 环境变量为上述名称大写并加 `MALOJA_` 前缀。首页各时间范围的隐藏图片、视口外图片不再提前提交后台解析任务；完整排行榜仍保留原有展示数量。
 

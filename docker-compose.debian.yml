@@ -1,0 +1,25 @@
+# Debian：docker compose -f docker-compose.debian.yml up -d
+services:
+  maloja:
+    image: liristy/maloja:3.2.8
+    restart: unless-stopped
+    ports:
+      - "42010:42010"
+    environment:
+      # 改为宿主机运行用户的 id -u / id -g；该用户须能读取音乐库。
+      PUID: "1000"
+      PGID: "1000"
+      TZ: Asia/Shanghai
+      MALOJA_LOCATION_TIMEZONE: Asia/Shanghai
+      MALOJA_DATA_DIRECTORY: /data
+      MALOJA_MEDIA_LIBRARY_PATH: /music
+      MALOJA_MEDIA_LIBRARY_SCAN_INTERVAL: "300"
+      MALOJA_MEDIA_LIBRARY_EXTERNAL_FALLBACK: "false"
+      MALOJA_IMAGE_THUMBNAIL_SIZE: "320"
+      MALOJA_IMAGE_QUALITY: "78"
+      MALOJA_STARTPAGE_CHART_IMAGES: "14"
+    volumes:
+      # 已有实例请沿用原数据挂载及数据目录配置，保留收听记录。
+      - ./maloja-data:/data
+      # 改为 Debian 上已存在的 Navidrome 音乐库实际路径，兼容旧 docker-compose。
+      - /srv/music:/music:ro

@@ -216,7 +216,7 @@ malojaconfig = Configuration(
 			"media_library_external_fallback":(tp.Boolean(), "External Artwork Fallback", False, "Allow provider searches for missing artwork when a media library is configured. Disabled to avoid ambiguous covers."),
 			"image_thumbnail_size":(tp.Integer(min=64,max=1200), "Cover Thumbnail Size", 320, "Maximum thumbnail width and height in pixels."),
 			"image_quality":(tp.Integer(min=1,max=100), "Cover Compression Quality", 78, "WebP quality for local, uploaded and proxied artwork."),
-			"startpage_chart_images":(tp.Integer(min=1,max=14), "Homepage Chart Images", 6, "Number of tiles per homepage chart."),
+			"startpage_chart_images":(tp.Integer(min=1,max=14), "Homepage Chart Images", 14, "Number of tiles per homepage chart."),
 			"default_range_startpage":(tp.Choice({'alltime':'All Time','year':'Year','month':"Month",'week':'Week'}),	"Default Range for Startpage Stats",	"year"),
 			"default_step_pulse":(tp.Choice({'year':'Year','month':"Month",'week':'Week','day':'Day'}),						"Default Pulse Step",			"month"),
 			"charts_display_tiles":(tp.Boolean(),								"Display Chart Tiles",			False),

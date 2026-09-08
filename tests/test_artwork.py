@@ -2,6 +2,7 @@
 import base64
 from concurrent.futures import ThreadPoolExecutor
 import io
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -87,10 +88,86 @@ class LibraryTests(unittest.TestCase):
         self.assertIsNone(self.library.lookup('album', self.album))
         self.assertGreater(status['ambiguous'], 0)
 
-    def test_track_with_wrong_album_never_uses_bare_title_match(self):
+    def test_unique_artist_and_song_match_accepts_old_album_label(self):
         self.seed()
         wrong = dict(self.track, album={'artists': ['蔡健雅'], 'albumtitle': 'Other'})
-        self.assertIsNone(self.library.lookup('track', wrong))
+        self.assertEqual(self.library.lookup('track', wrong), self.track_art)
+        self.assertIsNone(self.library.lookup('track', dict(wrong, artists=['Other artist'])))
+
+    def test_old_album_label_does_not_choose_between_editions(self):
+        self.seed()
+        other = self.folder.parent / 'Other'
+        nfo(other, album='Other')
+        picture(other / 'cover.jpg', 'yellow')
+        self.library.scan()
+        unknown = dict(self.track, album=dict(self.album, albumtitle='Unknown edition'))
+        self.assertIsNone(self.library.lookup('track', unknown))
+        self.assertEqual(self.library.lookup('track', self.track), self.track_art)
+
+    def test_edition_without_artwork_still_blocks_cross_album_fallback(self):
+        self.seed()
+        nfo(self.folder.parent / 'Other', album='Other')
+        self.library.scan()
+        unknown = dict(self.track, album=dict(self.album, albumtitle='Other'))
+        self.assertIsNone(self.library.lookup('track', unknown))
+
+    def test_collaboration_uses_media_folder_portrait_and_display_name(self):
+        folder = self.root / 'Folder Artist' / 'Compilation'
+        path = nfo(folder, artist='First • Second', album='Compilation')
+        import xml.etree.ElementTree as ET
+        tree = ET.parse(path)
+        participants = ET.SubElement(tree.getroot(), 'participants')
+        for name in ('First', 'Second'):
+            participant = ET.SubElement(participants, 'participant')
+            ET.SubElement(participant, 'name').text = name
+            ET.SubElement(participant, 'role').text = 'artist'
+        tree.write(path, encoding='utf-8')
+        portrait = picture(folder.parent / 'artist.jpg', 'blue')
+        first_portrait = picture(self.root / 'First' / 'artist.jpg', 'yellow')
+        cover = picture(folder / 'cover.jpg')
+        self.library.scan()
+        self.assertEqual(self.library.lookup('artist', 'First • Second'), portrait)
+        self.assertEqual(self.library.lookup('artist', 'First'), first_portrait)
+        self.assertEqual(self.library.lookup('track', {'artists': ['First • Second'], 'title': '空白格'}), cover)
+        self.assertEqual(self.library.lookup('track', {'artists': ['First', 'Second'], 'title': '空白格'}), cover)
+
+    def test_compilation_matches_scrobbled_track_artist_album(self):
+        folder = self.root / '群星' / self.album['albumtitle']
+        path = nfo(folder)
+        path.write_text(path.read_text(encoding='utf-8').replace('<albumartist>蔡健雅', '<albumartist>群星'), encoding='utf-8')
+        art = picture(folder / 'cover.jpg')
+        self.library.scan()
+        self.assertEqual(self.library.lookup('track', self.track), art)
+        self.assertEqual(self.library.lookup('album', self.album), art)
+        self.assertEqual(self.library.lookup('album', dict(self.album, artists=['群星'])), art)
+
+    def test_portraits_never_use_folder_cover_or_first_participant(self):
+        folder = self.root / 'Compilation' / 'Album'
+        nfo(folder, artist='First • Second')
+        picture(folder.parent / 'folder.jpg')
+        picture(folder / 'cover.jpg')
+        picture(self.root / 'First' / 'artist.jpg')
+        self.library.scan()
+        self.assertIsNone(self.library.lookup('artist', 'Compilation'))
+        self.assertIsNone(self.library.lookup('artist', 'First • Second'))
+
+    def test_conflicting_media_folder_portraits_are_not_randomly_selected(self):
+        for name, color in [('One', 'red'), ('Two', 'blue')]:
+            folder = self.root / name / 'Album'
+            nfo(folder, artist='First • Second')
+            picture(folder.parent / 'artist.jpg', color)
+        self.library.scan()
+        self.assertIsNone(self.library.lookup('artist', 'First • Second'))
+
+    def test_old_index_is_rebuilt_for_new_metadata_rules(self):
+        self.seed()
+        saved = json.loads(self.index.read_text(encoding='utf-8'))
+        saved['version'] = 1
+        self.index.write_text(json.dumps(saved), encoding='utf-8')
+        restarted = MediaLibrary(self.root, self.index)
+        self.assertFalse(restarted.ready)
+        restarted.scan()
+        self.assertEqual(restarted.lookup('track', self.track), self.track_art)
 
     def test_restarts_reuse_index_and_unchanged_nfo_is_not_reparsed(self):
         self.seed()
@@ -172,6 +249,22 @@ class ResolutionTests(unittest.TestCase):
         stream = io.BytesIO()
         Image.new('RGB', (1000, 1000), color).save(stream, 'PNG')
         return 'data:image/png;base64,' + base64.b64encode(stream.getvalue()).decode()
+
+    def test_library_artist_portrait_overrides_upload_and_provider_cache(self):
+        root = self.root / 'library'
+        portrait = picture(root / 'Singer' / 'artist.jpg', 'blue')
+        library = MediaLibrary(root, self.root / 'index.json')
+        library.scan()
+        self.options['MEDIA_LIBRARY_PATH'] = str(root)
+        patch.object(images, 'media_library', return_value=library).start()
+        selected = self.root / 'images' / 'selected' / (identity('artist', 'Singer') + '.webp')
+        picture(selected, 'red')
+        artist_id = images.database.sqldb.get_artist_id('Singer')
+        images.set_image_in_cache('https://example.invalid/stale', artist_id=artist_id)
+        with patch.object(images, 'queue_resolve', side_effect=AssertionError('external request')):
+            self.assertEqual(images.image_request(artist_id=artist_id)['value'], images.thumbnail(portrait))
+            portrait.unlink()
+            self.assertEqual(images.image_request(artist_id=artist_id)['value'], '/static/svg/placeholder_artist.svg')
 
     def test_upload_survives_expiry_and_late_provider_write(self):
         first = images.set_image(self.upload(), **self.album)

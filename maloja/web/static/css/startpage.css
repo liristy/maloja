@@ -1,6 +1,6 @@
-/* Fill the available space when fewer homepage covers are selected. */
+/* Fourteen compact covers; preserve lazy loading of hidden time ranges. */
 #startpage div.tiles {
-	grid-template-columns: repeat(3, minmax(0, 1fr));
+	grid-template-columns: repeat(7, minmax(0, 1fr));
 	grid-template-rows: none;
 	gap: 4px;
 	aspect-ratio: auto;
@@ -10,7 +10,21 @@
 	grid-column: auto;
 	grid-row: auto;
 	aspect-ratio: 1;
-	font-size: 80%;
+	font-size: 75%;
+}
+#startpage div.tiles span {
+	padding: 2px;
+}
+#startpage div.tiles span:not(.stats) {
+	display: -webkit-box;
+	-webkit-line-clamp: 2;
+	-webkit-box-orient: vertical;
+	max-width: 100%;
+}
+@media (max-width: 600px) {
+	#startpage div.tiles {
+		grid-template-columns: repeat(4, minmax(0, 1fr));
+	}
 }
 #startpage > section {
 	min-width: 0;
@@ -30,7 +44,6 @@ div#startpage {
 	display: grid;
 	justify-content: center;
 
-	display: fixed;
 	grid-column-gap: 25px;
 	grid-row-gap: 25px;
 }

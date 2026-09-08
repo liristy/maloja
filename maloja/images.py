@@ -106,6 +106,19 @@ def entity_info(artist_id=None, track_id=None, album_id=None):
 	return "artist", database.sqldb.get_artist(artist_id)
 
 def preferred_image(kind, entity):
+	# When a library is configured, artist portraits belong exclusively to its
+	# artist sidecars. Old uploads/provider caches must not override the folder.
+	if kind == 'artist' and malojaconfig["MEDIA_LIBRARY_PATH"]:
+		media = media_library()
+		path = media.lookup(kind, entity)
+		if path:
+			try:
+				return {'type': 'localurl', 'value': thumbnail(path)}
+			except (OSError, ValueError):
+				log(f"Cannot read media artwork: {path}")
+		if not media.ready:
+			return {'type': 'noimage', 'value': 'wait'}
+		return {'type': 'localurl', 'value': '/static/svg/placeholder_artist.svg'}
 	# User selections are durable state, independent of expiring provider caches.
 	selected = Path(data_dir['images']('selected', identity(kind, entity) + '.webp'))
 	if selected.is_file():
